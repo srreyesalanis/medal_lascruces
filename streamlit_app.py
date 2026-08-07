@@ -1,16 +1,19 @@
 """
 streamlit_app.py — Medal Play Tournament App (Las Cruces)
 Streamlit + Supabase — formato medal, compatible con HDC importar ronda
+Diseño similar a Stableford: sidebar + leaderboard
 """
 import streamlit as st
 import random
 import string
 import uuid
+import pandas as pd
 from datetime import date
+from collections import defaultdict
 
 from supabase import create_client
 
-st.set_page_config(page_title="⛳ Medal Play", layout="centered")
+st.set_page_config(page_title="⛳ Medal Play", layout="wide")
 
 st.markdown("""
 <style>
@@ -22,6 +25,7 @@ div[data-testid="stButton"] > button[kind="primary"] {
     font-size: 1.1rem;
     padding: 0.6rem;
 }
+section[data-testid="stSidebar"] { min-width: 200px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -66,7 +70,7 @@ def admin_login():
     st.title("🔐 Admin")
     email = st.text_input("Email")
     password = st.text_input("Contraseña", type="password")
-    if st.button("Entrar", type="primary"):
+    if st.button("Entrar", type="primary", use_container_width=True):
         try:
             sb = get_client()
             res = sb.auth.sign_in_with_password({"email": email, "password": password})
@@ -85,13 +89,10 @@ def admin_login():
 def rnd_code(n=6):
     return "".join(random.choices(string.digits, k=n))
 
-def rnd_id():
-    return str(uuid.uuid4())
+DEFAULT_COURSE = "Las Cruces"
+DEFAULT_TEE = "Blancas"
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
-
-DEFAULT_COURSE = "Las Cruces"
-DEFAULT_TEE    = "Blancas"
 
 def get_courses():
     sb = get_authed_client()
@@ -150,6 +151,16 @@ def get_group_players(gid):
     sb = get_authed_client()
     return (sb.table("group_players").select("id, player_id, guest_id, player_name, course_handicap").eq("group_id", gid).execute()).data or []
 
+def get_all_tournament_players(tid):
+    groups = get_groups(tid)
+    players = []
+    for g in groups:
+        for p in get_group_players(g["id"]):
+            p["group_name"] = g["name"]
+            p["group_id"] = g["id"]
+            players.append(p)
+    return players
+
 def add_player_to_group(gid, player_name, course_handicap, player_id=None):
     sb = get_authed_client()
     row = {
@@ -198,274 +209,345 @@ def get_scores(tid):
     sb = get_authed_client()
     return (sb.table("tournament_scores").select("player_id, guest_id, hole_number, strokes").eq("tournament_id", tid).execute()).data or []
 
+def get_group_by_code(code):
+    sb = get_authed_client()
+    res = sb.table("groups").select("id, name, access_code, tournament_id").eq("access_code", code).execute()
+    if not res.data:
+        return None
+    group = res.data[0]
+    torneo_res = sb.table("tournaments").select("id, name, date, tee_id, access_code").eq("id", group["tournament_id"]).execute()
+    if not torneo_res.data:
+        return None
+    return {"group": group, "torneo": torneo_res.data[0]}
+
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGES
+# LEADERBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 
-def page_home():
-    st.title("⛳ Medal Play — Las Cruces")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("➕ Nuevo Torneo", type="primary", use_container_width=True):
-            st.session_state["page"] = "nuevo_torneo"
-            st.rerun()
-    with col2:
-        if st.button("📋 Torneos", use_container_width=True):
-            st.session_state["page"] = "torneos"
-            st.rerun()
+def leaderboard_ui():
+    st.title("⛳ Leaderboard — Medal Play")
 
-    st.markdown("---")
-    # Acceso rápido por código de grupo
-    st.subheader("Acceso rápido")
-    code = st.text_input("Código de grupo", placeholder="123456", max_chars=6)
-    if st.button("Entrar al grupo", use_container_width=True):
-        if code:
-            sb = get_client()
-            res = sb.table("groups").select("id, name, access_code, tournament_id").eq("access_code", code).execute()
-            if res.data:
-                g = res.data[0]
-                st.session_state["page"] = "capturar"
-                st.session_state["group_id"] = g["id"]
-                st.session_state["group_name"] = g["name"]
-                st.session_state["tournament_id"] = g["tournament_id"]
-                st.rerun()
-            else:
-                st.error("Código no encontrado.")
-
-def page_nuevo_torneo():
-    admin_login()
-    st.title("➕ Nuevo Torneo Medal")
-
-    courses = get_courses()
-    if not courses:
-        st.error("No hay campos en la base de datos.")
+    tournaments = get_tournaments()
+    if not tournaments:
+        st.info("No hay torneos disponibles.")
         return
 
-    course_opts = {c["name"]: c for c in courses}
-    default_idx = list(course_opts.keys()).index(DEFAULT_COURSE) if DEFAULT_COURSE in course_opts else 0
-    sel_course = st.selectbox("Campo", list(course_opts.keys()), index=default_idx)
-    course = course_opts[sel_course]
-
-    tees = get_tees(course["id"])
-    if not tees:
-        st.warning("No hay tees para este campo.")
-        return
-    tee_opts = {t["color"]: t for t in tees}
-    default_tee_idx = list(tee_opts.keys()).index(DEFAULT_TEE) if DEFAULT_TEE in tee_opts else 0
-    sel_tee = st.selectbox("Tees", list(tee_opts.keys()), index=default_tee_idx)
-    tee = tee_opts[sel_tee]
-
-    nombre = st.text_input("Nombre del torneo", placeholder="Medal 07-Ago")
-    fecha  = st.date_input("Fecha", value=date.today())
-
-    if st.button("Crear Torneo", type="primary", use_container_width=True):
-        if not nombre.strip():
-            st.error("Ponle nombre al torneo.")
-            return
-        torneo = create_tournament(nombre.strip(), str(fecha), tee["id"])
-        if torneo:
-            st.success("Torneo creado ✅")
-            st.session_state["page"] = "torneo_detail"
-            st.session_state["tournament_id"] = torneo["id"]
-            st.rerun()
-        else:
-            st.error("Error al crear el torneo.")
-
-    if st.button("← Atrás", use_container_width=True):
-        st.session_state["page"] = "home"
-        st.rerun()
-
-def page_torneos():
-    admin_login()
-    st.title("📋 Torneos Medal")
-
-    torneos = get_tournaments()
-    if not torneos:
-        st.info("No hay torneos medal.")
-    else:
-        for t in torneos:
-            col1, col2, col3 = st.columns([4, 2, 1])
-            with col1:
-                if st.button(str(t["date"]) + " — " + t["name"], key="t_" + t["id"], use_container_width=True):
-                    st.session_state["page"] = "torneo_detail"
-                    st.session_state["tournament_id"] = t["id"]
-                    st.rerun()
-            with col2:
-                st.caption("Código: " + str(t.get("access_code", "")))
-            with col3:
-                if st.button("🗑", key="del_" + t["id"]):
-                    delete_tournament(t["id"])
-                    st.rerun()
-
-    if st.button("← Atrás", use_container_width=True):
-        st.session_state["page"] = "home"
-        st.rerun()
-
-def page_torneo_detail():
-    admin_login()
-    tid = st.session_state.get("tournament_id")
-    if not tid:
-        st.session_state["page"] = "torneos"
-        st.rerun()
+    t_map = {t['name']: t for t in tournaments}
+    t_label = st.selectbox("Torneo", list(t_map.keys()), index=None, placeholder="Selecciona un torneo...")
+    if t_label is None:
+        st.info("Selecciona un torneo para ver el leaderboard.")
         return
 
-    torneos = get_tournaments()
-    torneo = next((t for t in torneos if t["id"] == tid), None)
-    if not torneo:
-        st.error("Torneo no encontrado.")
+    torneo = t_map[t_label]
+    players = get_all_tournament_players(torneo["id"])
+    scores_raw = get_scores(torneo["id"])
+
+    if not players:
+        st.warning("Este torneo no tiene jugadores.")
         return
 
-    st.title("⛳ " + torneo["name"])
-    st.caption(str(torneo["date"]) + " | Código admin: " + str(torneo.get("access_code", "")))
-
-    groups = get_groups(tid)
-
-    # Crear grupo
-    with st.expander("➕ Agregar grupo"):
-        gname = st.text_input("Nombre del grupo", key="new_group_name")
-        if st.button("Crear grupo", key="btn_new_group", type="primary"):
-            if gname.strip():
-                create_group(tid, gname.strip())
-                st.rerun()
-
-    st.markdown("---")
-
-    # Lista de grupos
-    players_hdc = get_players()
-    phdc_opts = {p["name"]: p for p in players_hdc}
-
-    for grp in groups:
-        st.subheader("👥 " + grp["name"] + "  |  Código: " + grp["access_code"])
-        gps = get_group_players(grp["id"])
-
-        for gp in gps:
-            col1, col2 = st.columns([5, 1])
-            with col1:
-                st.write("• " + str(gp["player_name"]) + "  (HC: " + str(gp.get("course_handicap", "-")) + ")")
-            with col2:
-                if st.button("✖", key="rm_" + gp["id"]):
-                    remove_player_from_group(gp["id"])
-                    st.rerun()
-
-        with st.expander("Agregar jugador al grupo"):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                sel_p = st.selectbox("Jugador HDC", ["(invitado)"] + list(phdc_opts.keys()), key="sp_" + grp["id"])
-            with col_b:
-                hcp_input = st.number_input("Course HC", min_value=0, max_value=54, value=0, key="hc_" + grp["id"])
-            if sel_p != "(invitado)":
-                pdata = phdc_opts[sel_p]
-                if st.button("Agregar", key="add_" + grp["id"], type="primary"):
-                    add_player_to_group(grp["id"], pdata["name"], hcp_input, player_id=pdata["id"])
-                    st.rerun()
-            else:
-                guest_name = st.text_input("Nombre invitado", key="gn_" + grp["id"])
-                if st.button("Agregar invitado", key="addi_" + grp["id"], type="primary"):
-                    if guest_name.strip():
-                        add_player_to_group(grp["id"], guest_name.strip(), hcp_input)
-                        st.rerun()
-
-        if st.button("📝 Capturar scores — " + grp["name"], key="cap_" + grp["id"], use_container_width=True):
-            st.session_state["page"] = "capturar"
-            st.session_state["group_id"] = grp["id"]
-            st.session_state["group_name"] = grp["name"]
-            st.rerun()
-
-        st.markdown("---")
-
-    if st.button("← Torneos", use_container_width=True):
-        st.session_state["page"] = "torneos"
-        st.rerun()
-
-def page_capturar():
-    tid = st.session_state.get("tournament_id")
-    gid = st.session_state.get("group_id")
-    gname = st.session_state.get("group_name", "Grupo")
-
-    if not tid or not gid:
-        st.error("No hay torneo/grupo seleccionado.")
-        return
-
-    st.title("📝 " + gname)
-
-    gps = get_group_players(gid)
-    if not gps:
-        st.warning("No hay jugadores en este grupo.")
-        return
-
-    # Scores actuales
-    scores_raw = get_scores(tid)
+    # Índice de scores por (player_id/guest_id, hoyo)
     scores_idx = {}
     for s in scores_raw:
         pid = s.get("player_id") or s.get("guest_id")
         scores_idx[(pid, s["hole_number"])] = s["strokes"]
 
-    # Tabla de captura por jugador
-    for gp in gps:
-        pid = gp.get("player_id") or gp.get("guest_id") or gp["id"]
-        st.subheader(gp["player_name"])
+    # Traer hoyos del campo
+    sb = get_authed_client()
+    tee_id = torneo.get("tee_id")
+    tee = {}
+    course_id = None
+    if tee_id:
+        tee_res = sb.table("tees").select("course_id").eq("id", tee_id).execute()
+        tee = tee_res.data[0] if tee_res.data else {}
+        course_id = tee.get("course_id")
 
-        col_labels = st.columns(10)
-        col_labels[0].markdown("**Hoyo**")
-        for i in range(1, 10):
-            col_labels[i].markdown("**" + str(i) + "**")
+    holes_list = get_holes(course_id) if course_id else []
+    holes = {h["hole_number"]: h for h in holes_list}
+    hole_nums = sorted(holes.keys())
 
-        # Front 9
-        front_vals = []
-        cols_f = st.columns(10)
-        cols_f[0].markdown("Front")
-        for i, h in enumerate(range(1, 10)):
+    # Calcular totales por jugador
+    player_totals = {}
+    player_front = {}
+    player_back = {}
+    for p in players:
+        pid = p.get("player_id") or p.get("guest_id")
+        front = 0
+        back = 0
+        for h in range(1, 10):
             v = scores_idx.get((pid, h), 0)
-            front_vals.append(cols_f[i+1].number_input(
-                "", min_value=0, max_value=20, value=int(v),
-                key="f_" + str(gp["id"]) + "_" + str(h), label_visibility="collapsed"
-            ))
-
-        # Back 9
-        back_vals = []
-        cols_b = st.columns(10)
-        cols_b[0].markdown("Back")
-        for i, h in enumerate(range(10, 19)):
+            if v:
+                front += v
+        for h in range(10, 19):
             v = scores_idx.get((pid, h), 0)
-            back_vals.append(cols_b[i+1].number_input(
-                "", min_value=0, max_value=20, value=int(v),
-                key="b_" + str(gp["id"]) + "_" + str(h), label_visibility="collapsed"
-            ))
+            if v:
+                back += v
+        player_totals[pid] = front + back
+        player_front[pid] = front
+        player_back[pid] = back
 
-        total = sum(front_vals) + sum(back_vals)
-        st.caption("Front: " + str(sum(front_vals)) + " | Back: " + str(sum(back_vals)) + " | Total: " + str(total))
+    # Rankear
+    ranked = []
+    for p in players:
+        pid = p.get("player_id") or p.get("guest_id")
+        total = player_totals.get(pid, 0)
+        ranked.append({
+            "pid": pid,
+            "name": p["player_name"],
+            "total": total,
+            "front": player_front.get(pid, 0),
+            "back": player_back.get(pid, 0),
+        })
+    ranked.sort(key=lambda x: x["total"] if x["total"] > 0 else float('inf'))
 
-        if st.button("💾 Guardar " + gp["player_name"], key="save_" + gp["id"], type="primary", use_container_width=True):
+    # Ganadores
+    st.markdown(f"### 🏆 Ganadores")
+    if ranked:
+        best_total = min(r["total"] for r in ranked if r["total"] > 0)
+        best_front = min(player_front.get((p.get("player_id") or p.get("guest_id")), 0) for p in players if player_front.get((p.get("player_id") or p.get("guest_id")), 0) > 0)
+        best_back = min(player_back.get((p.get("player_id") or p.get("guest_id")), 0) for p in players if player_back.get((p.get("player_id") or p.get("guest_id")), 0) > 0)
+
+        winners_total = [r["name"] for r in ranked if r["total"] == best_total]
+        winners_front = [p["player_name"] for p in players if player_front.get((p.get("player_id") or p.get("guest_id")), 0) == best_front and best_front > 0]
+        winners_back = [p["player_name"] for p in players if player_back.get((p.get("player_id") or p.get("guest_id")), 0) == best_back and best_back > 0]
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("🌅 Front 9", f"{best_front}", " / ".join(winners_front) if winners_front else "—")
+        with col2:
+            st.metric("🌆 Back 9", f"{best_back}", " / ".join(winners_back) if winners_back else "—")
+        with col3:
+            st.metric("🎖️ Torneo", f"{best_total}", " / ".join(winners_total) if winners_total else "—")
+
+    # Tabla detalle por hoyo
+    if ranked and hole_nums:
+        st.subheader("📊 Detalle por hoyo")
+        
+        tabla_data = []
+        for r in ranked:
+            pid = r["pid"]
+            row_data = {"Jugador": r["name"]}
+            for h in hole_nums:
+                v = scores_idx.get((pid, h), 0)
+                row_data[f"H{h}"] = v if v > 0 else "—"
+            row_data["Front"] = r["front"]
+            row_data["Back"] = r["back"]
+            row_data["Total"] = r["total"]
+            tabla_data.append(row_data)
+
+        df = pd.DataFrame(tabla_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CAPTURAR SCORES
+# ══════════════════════════════════════════════════════════════════════════════
+
+def capture_ui():
+    st.title("⛳ Capturar Scores — Grupo")
+
+    # Restaurar desde URL
+    if not st.session_state.get("group_auth"):
+        code_from_url = st.query_params.get("code")
+        if code_from_url and not st.session_state.get("_restoring_code"):
+            st.session_state["_restoring_code"] = True
+            result = get_group_by_code(code_from_url)
+            if result:
+                st.session_state["group_auth"] = result
+                st.session_state["_restoring_code"] = False
+                st.rerun()
+            else:
+                st.session_state["_restoring_code"] = False
+
+    if st.session_state.get("group_auth"):
+        group = st.session_state["group_auth"]["group"]
+        torneo = st.session_state["group_auth"]["torneo"]
+        st.success(f"✅ {group['name']} — {torneo['name']}")
+        if st.button("🔄 Cambiar grupo"):
+            st.session_state["group_auth"] = None
+            st.query_params.clear()
+            st.rerun()
+
+        gid = group["id"]
+        tid = torneo["id"]
+        gps = get_group_players(gid)
+
+        if not gps:
+            st.warning("No hay jugadores en este grupo.")
+            return
+
+        scores_raw = get_scores(tid)
+        scores_idx = {}
+        for s in scores_raw:
+            pid = s.get("player_id") or s.get("guest_id")
+            scores_idx[(pid, s["hole_number"])] = s["strokes"]
+
+        # Capturar por jugador
+        for gp in gps:
+            pid = gp.get("player_id") or gp.get("guest_id") or gp["id"]
+            st.subheader(gp["player_name"])
+
+            col_labels = st.columns(10)
+            col_labels[0].markdown("**Hoyo**")
+            for i in range(1, 10):
+                col_labels[i].markdown("**" + str(i) + "**")
+
+            # Front 9
+            front_vals = []
+            cols_f = st.columns(10)
+            cols_f[0].markdown("Front")
             for i, h in enumerate(range(1, 10)):
-                upsert_score(tid, gid, h, int(front_vals[i]),
-                             player_id=gp.get("player_id"), guest_id=gp.get("guest_id"))
+                v = scores_idx.get((pid, h), 0)
+                front_vals.append(cols_f[i+1].number_input(
+                    "", min_value=0, max_value=20, value=int(v),
+                    key=f"f_{gp['id']}_{h}", label_visibility="collapsed"
+                ))
+
+            # Back 9
+            back_vals = []
+            cols_b = st.columns(10)
+            cols_b[0].markdown("Back")
             for i, h in enumerate(range(10, 19)):
-                upsert_score(tid, gid, h, int(back_vals[i]),
-                             player_id=gp.get("player_id"), guest_id=gp.get("guest_id"))
-            st.success("Scores guardados ✅")
+                v = scores_idx.get((pid, h), 0)
+                back_vals.append(cols_b[i+1].number_input(
+                    "", min_value=0, max_value=20, value=int(v),
+                    key=f"b_{gp['id']}_{h}", label_visibility="collapsed"
+                ))
 
-        st.markdown("---")
+            total = sum(front_vals) + sum(back_vals)
+            st.caption("Front: " + str(sum(front_vals)) + " | Back: " + str(sum(back_vals)) + " | Total: " + str(total))
 
-    if st.button("← Volver al torneo", use_container_width=True):
-        st.session_state["page"] = "torneo_detail"
+            if st.button("💾 Guardar " + gp["player_name"], key="save_" + gp["id"], type="primary", use_container_width=True):
+                for i, h in enumerate(range(1, 10)):
+                    upsert_score(tid, gid, h, int(front_vals[i]),
+                                 player_id=gp.get("player_id"), guest_id=gp.get("guest_id"))
+                for i, h in enumerate(range(10, 19)):
+                    upsert_score(tid, gid, h, int(back_vals[i]),
+                                 player_id=gp.get("player_id"), guest_id=gp.get("guest_id"))
+                st.success("Scores guardados!")
+
+            st.markdown("---")
+        return
+
+    # Entrada de código
+    st.markdown("**Ingresa el código de tu grupo:**")
+    code = st.text_input("Código de grupo", max_chars=6, placeholder="123456")
+
+    if st.button("Entrar", type="primary", use_container_width=True):
+        if not code or len(code) != 6 or not code.isdigit():
+            st.error("El código debe ser de 6 dígitos numéricos.")
+            return
+        result = get_group_by_code(code)
+        if not result:
+            st.error("Código no encontrado.")
+            return
+        st.session_state["group_auth"] = result
+        st.query_params["code"] = code
         st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ROUTER
+# ADMIN PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 
-page = st.session_state.get("page", "home")
+def admin_panel():
+    st.title("⛳ Admin — Medal Play")
 
-if page == "home":
-    page_home()
-elif page == "nuevo_torneo":
-    page_nuevo_torneo()
-elif page == "torneos":
-    page_torneos()
-elif page == "torneo_detail":
-    page_torneo_detail()
-elif page == "capturar":
-    page_capturar()
-else:
-    st.session_state["page"] = "home"
-    st.rerun()
+    tab1, tab2, tab3 = st.tabs(["➕ Crear Torneo", "🔑 Ver Códigos", "🗑️ Borrar"])
+
+    with tab1:
+        st.header("Nuevo Torneo")
+        courses = get_courses()
+        if not courses:
+            st.error("No hay campos en la BD.")
+            return
+
+        course_opts = {c["name"]: c for c in courses}
+        default_idx = list(course_opts.keys()).index(DEFAULT_COURSE) if DEFAULT_COURSE in course_opts else 0
+        sel_course = st.selectbox("Campo", list(course_opts.keys()), index=default_idx)
+        course = course_opts[sel_course]
+
+        tees = get_tees(course["id"])
+        if not tees:
+            st.error("No hay tees para este campo.")
+            return
+
+        tee_opts = {t["color"]: t for t in tees}
+        default_tee_idx = list(tee_opts.keys()).index(DEFAULT_TEE) if DEFAULT_TEE in tee_opts else 0
+        sel_tee = st.selectbox("Tees", list(tee_opts.keys()), index=default_tee_idx)
+        tee = tee_opts[sel_tee]
+
+        nombre = st.text_input("Nombre del torneo", placeholder="Medal 07-Ago")
+        fecha = st.date_input("Fecha", value=date.today())
+
+        if st.button("Crear Torneo", type="primary", use_container_width=True):
+            if not nombre.strip():
+                st.error("Ponle nombre al torneo.")
+                return
+            torneo = create_tournament(nombre.strip(), str(fecha), tee["id"])
+            if torneo:
+                st.success("Torneo creado!")
+                st.session_state["page"] = "admin_detail"
+                st.session_state["tournament_id"] = torneo["id"]
+                st.rerun()
+            else:
+                st.error("Error al crear el torneo.")
+
+    with tab2:
+        st.header("Códigos de Torneo")
+        torneos = get_tournaments()
+        if not torneos:
+            st.info("No hay torneos.")
+        else:
+            for t in torneos:
+                with st.expander(f"{t['date']} — {t['name']}"):
+                    groups = get_groups(t["id"])
+                    st.caption(f"Torneo: `{t['access_code']}`")
+                    for g in groups:
+                        st.write(f"• {g['name']}: `{g['access_code']}`")
+
+    with tab3:
+        st.header("Borrar Torneo")
+        torneos = get_tournaments()
+        if not torneos:
+            st.info("No hay torneos.")
+        else:
+            t_opts = {f"{t['date']} — {t['name']}": t for t in torneos}
+            sel_t = st.selectbox("Torneo", list(t_opts.keys()), index=None, placeholder="Selecciona...")
+            if sel_t:
+                t = t_opts[sel_t]
+                if st.button("🗑️ Borrar este torneo", type="secondary", use_container_width=True):
+                    delete_tournament(t["id"])
+                    st.rerun()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN ROUTER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    st.sidebar.title("⛳ Medal Play")
+
+    default_idx = 0
+    if st.session_state.get("group_auth"):
+        default_idx = 1
+    elif st.session_state.get("admin_logged_in"):
+        default_idx = 2
+
+    vista = st.sidebar.radio("Vista", ["🏆 Leaderboard", "🎯 Capturar", "🔐 Admin"], index=default_idx)
+
+    if vista == "🔐 Admin":
+        if not st.session_state.get("admin_logged_in"):
+            admin_login()
+        else:
+            if st.sidebar.button("Cerrar sesión"):
+                st.session_state["admin_logged_in"] = False
+                st.session_state["access_token"] = None
+                st.session_state["refresh_token"] = None
+                st.query_params.pop("_rt", None)
+                st.rerun()
+            admin_panel()
+    elif vista == "🎯 Capturar":
+        capture_ui()
+    else:
+        leaderboard_ui()
+
+if __name__ == "__main__":
+    main()
