@@ -547,7 +547,8 @@ def admin_panel():
                     with col_b:
                         hcp_v = 0
                         if sel_p != "— Seleccionar —":
-                            hcp_v = int(phdc_opts[sel_p].get("current_handicap") or 0)
+                            raw_hcp = phdc_opts[sel_p].get("current_handicap") or 0
+                            hcp_v = round(float(raw_hcp))
                         hcp_input = st.number_input("Course HC", min_value=0, max_value=54, value=hcp_v, key="t2_hcp")
                     if st.button("Agregar jugador", type="primary", key="t2_btn_add"):
                         if sel_p != "— Seleccionar —":
