@@ -307,23 +307,26 @@ def leaderboard_ui():
     ranked.sort(key=lambda x: x["total"] if x["total"] > 0 else float('inf'))
 
     # Ganadores
-    st.markdown(f"### 🏆 Ganadores")
+    st.markdown("### 🏆 Ganadores")
     if ranked:
-        best_total = min(r["total"] for r in ranked if r["total"] > 0)
-        best_front = min(player_front.get((p.get("player_id") or p.get("guest_id")), 0) for p in players if player_front.get((p.get("player_id") or p.get("guest_id")), 0) > 0)
-        best_back = min(player_back.get((p.get("player_id") or p.get("guest_id")), 0) for p in players if player_back.get((p.get("player_id") or p.get("guest_id")), 0) > 0)
+        def _best(vals): return min(v for v in vals if v > 0) if any(v > 0 for v in vals) else None
+        def _pid(p): return p.get("player_id") or p.get("guest_id")
 
-        winners_total = [r["name"] for r in ranked if r["total"] == best_total]
-        winners_front = [p["player_name"] for p in players if player_front.get((p.get("player_id") or p.get("guest_id")), 0) == best_front and best_front > 0]
-        winners_back = [p["player_name"] for p in players if player_back.get((p.get("player_id") or p.get("guest_id")), 0) == best_back and best_back > 0]
+        best_total = _best([r["total"] for r in ranked])
+        best_front = _best([player_front.get(_pid(p), 0) for p in players])
+        best_back  = _best([player_back.get(_pid(p), 0)  for p in players])
+
+        winners_total = [r["name"]        for r in ranked  if best_total and r["total"] == best_total]
+        winners_front = [p["player_name"] for p in players if best_front and player_front.get(_pid(p), 0) == best_front]
+        winners_back  = [p["player_name"] for p in players if best_back  and player_back.get(_pid(p), 0)  == best_back]
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("🌅 Front 9", f"{best_front}", " / ".join(winners_front) if winners_front else "—")
+            st.metric("🌅 Front 9", str(best_front) if best_front else "—", " / ".join(winners_front))
         with col2:
-            st.metric("🌆 Back 9", f"{best_back}", " / ".join(winners_back) if winners_back else "—")
+            st.metric("🌆 Back 9",  str(best_back)  if best_back  else "—", " / ".join(winners_back))
         with col3:
-            st.metric("🎖️ Torneo", f"{best_total}", " / ".join(winners_total) if winners_total else "—")
+            st.metric("🎖️ Torneo",  str(best_total) if best_total else "—", " / ".join(winners_total))
 
     # Tabla detalle por hoyo
     if ranked and hole_nums:
