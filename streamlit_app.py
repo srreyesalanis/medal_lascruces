@@ -485,11 +485,94 @@ def admin_panel():
             torneo = create_tournament(nombre.strip(), str(fecha), tee["id"])
             if torneo:
                 st.success("Torneo creado!")
-                st.session_state["page"] = "admin_detail"
-                st.session_state["tournament_id"] = torneo["id"]
+                st.session_state["admin_torneo_id"] = torneo["id"]
                 st.rerun()
             else:
                 st.error("Error al crear el torneo.")
+
+        # ── Gestión de grupos del torneo seleccionado ──────────────────────────
+        torneos = get_tournaments()
+        if torneos:
+            st.markdown("---")
+            st.subheader("Gestionar grupos de un torneo")
+            t_opts = {f"{t['date']} — {t['name']}": t for t in torneos}
+            saved_tid = st.session_state.get("admin_torneo_id")
+            default_t_idx = None
+            if saved_tid:
+                for i, t in enumerate(torneos):
+                    if t["id"] == saved_tid:
+                        default_t_idx = i
+                        break
+            sel_t_label = st.selectbox(
+                "Torneo", list(t_opts.keys()),
+                index=default_t_idx,
+                placeholder="Selecciona un torneo...",
+                key="admin_sel_torneo"
+            )
+            if sel_t_label:
+                torneo_sel = t_opts[sel_t_label]
+                tid = torneo_sel["id"]
+                st.session_state["admin_torneo_id"] = tid
+
+                groups = get_groups(tid)
+                players_hdc = get_players()
+                phdc_opts = {p["name"]: p for p in players_hdc}
+
+                # Crear nuevo grupo
+                with st.expander("➕ Nuevo grupo", expanded=len(groups) == 0):
+                    gname = st.text_input("Nombre del grupo", key="new_gname", placeholder="Grupo 1")
+                    if st.button("Crear grupo", type="primary", key="btn_crear_grupo"):
+                        if gname.strip():
+                            grp = create_group(tid, gname.strip())
+                            st.success(f"Grupo '{gname}' creado — Código: `{grp['access_code']}`")
+                            st.rerun()
+
+                # Lista de grupos con jugadores
+                for grp in groups:
+                    st.markdown(f"**👥 {grp['name']}** — Código: `{grp['access_code']}`")
+                    gps = get_group_players(grp["id"])
+
+                    for gp in gps:
+                        col1, col2 = st.columns([6, 1])
+                        with col1:
+                            st.write(f"• {gp['player_name']}  (HC: {gp.get('course_handicap', '-')})")
+                        with col2:
+                            if st.button("✖", key=f"rm_{gp['id']}"):
+                                remove_player_from_group(gp["id"])
+                                st.rerun()
+
+                    with st.expander(f"➕ Agregar jugador a {grp['name']}"):
+                        tipo = st.radio("Tipo", ["Registrado", "Invitado"], key=f"tipo_{grp['id']}", horizontal=True)
+                        col_a, col_b = st.columns(2)
+                        if tipo == "Registrado":
+                            with col_a:
+                                sel_p = st.selectbox("Jugador", ["— Seleccionar —"] + list(phdc_opts.keys()), key=f"sp_{grp['id']}")
+                            with col_b:
+                                hcp_v = 0
+                                if sel_p != "— Seleccionar —":
+                                    hcp_v = int(phdc_opts[sel_p].get("current_handicap") or 0)
+                                hcp_input = st.number_input("Course HC", min_value=0, max_value=54, value=hcp_v, key=f"hc_{grp['id']}")
+                            if st.button("Agregar", key=f"add_{grp['id']}", type="primary"):
+                                if sel_p != "— Seleccionar —":
+                                    pdata = phdc_opts[sel_p]
+                                    add_player_to_group(grp["id"], pdata["name"], hcp_input, player_id=pdata["id"])
+                                    st.rerun()
+                        else:
+                            with col_a:
+                                guest_name = st.text_input("Nombre", key=f"gn_{grp['id']}")
+                            with col_b:
+                                hcp_input = st.number_input("Course HC", min_value=0, max_value=54, value=0, key=f"ghc_{grp['id']}")
+                            if st.button("Agregar invitado", key=f"addi_{grp['id']}", type="primary"):
+                                if guest_name.strip():
+                                    add_player_to_group(grp["id"], guest_name.strip(), hcp_input)
+                                    st.rerun()
+
+                    # Botón capturar directo desde admin
+                    if st.button(f"📝 Capturar scores — {grp['name']}", key=f"cap_{grp['id']}", use_container_width=True):
+                        st.session_state["group_auth"] = {"group": grp, "torneo": torneo_sel}
+                        st.rerun()
+
+                    st.markdown("---")
 
     with tab2:
         st.header("Códigos de Torneo")
