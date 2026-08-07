@@ -178,6 +178,12 @@ def remove_player_from_group(gp_id):
     sb = get_authed_client()
     sb.table("group_players").delete().eq("id", gp_id).execute()
 
+def delete_group(gid):
+    sb = get_authed_client()
+    sb.table("group_players").delete().eq("group_id", gid).execute()
+    sb.table("tournament_scores").delete().eq("group_id", gid).execute()
+    sb.table("groups").delete().eq("id", gid).execute()
+
 def upsert_score(tid, gid, hole_number, strokes, player_id=None, guest_id=None):
     sb = get_authed_client()
     q = sb.table("tournament_scores").select("id").eq("tournament_id", tid).eq("hole_number", hole_number)
@@ -606,8 +612,13 @@ def admin_panel():
                                     st.write(f"• {gp['player_name']} (HC: {gp.get('course_handicap', '-')})")
                             else:
                                 st.caption("Sin jugadores.")
-                            if st.button(f"📝 Capturar scores", key=f"cap3_{grp['id']}", use_container_width=True):
+                            col_cap, col_del = st.columns(2)
+                            if col_cap.button(f"📝 Capturar scores", key=f"cap3_{grp['id']}", use_container_width=True):
                                 st.session_state["group_auth"] = {"group": grp, "torneo": t_opts3[sel_t3]}
+                                st.rerun()
+                            if col_del.button(f"🗑️ Borrar grupo", key=f"del3_{grp['id']}", use_container_width=True):
+                                delete_group(grp["id"])
+                                st.success(f"Grupo '{grp['name']}' borrado.")
                                 st.rerun()
 
     with tab4:
