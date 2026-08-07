@@ -544,12 +544,16 @@ def admin_panel():
                 if tipo == "Registrado":
                     with col_a:
                         sel_p = st.selectbox("Jugador", ["— Seleccionar —"] + list(phdc_opts.keys()), key="t2_jugador")
+                        if sel_p != st.session_state.get("_last_sel_p"):
+                            st.session_state["_last_sel_p"] = sel_p
+                            if sel_p != "— Seleccionar —":
+                                raw = phdc_opts[sel_p].get("current_handicap") or 0
+                                st.session_state["t2_hcp"] = round(float(raw))
+                            else:
+                                st.session_state["t2_hcp"] = 0
+                            st.rerun()
                     with col_b:
-                        hcp_v = 0
-                        if sel_p != "— Seleccionar —":
-                            raw_hcp = phdc_opts[sel_p].get("current_handicap") or 0
-                            hcp_v = round(float(raw_hcp))
-                        hcp_input = st.number_input("Course HC", min_value=0, max_value=54, value=hcp_v, key="t2_hcp")
+                        hcp_input = st.number_input("Course HC", min_value=0, max_value=54, key="t2_hcp")
                     if st.button("Agregar jugador", type="primary", key="t2_btn_add"):
                         if sel_p != "— Seleccionar —":
                             pdata = phdc_opts[sel_p]
