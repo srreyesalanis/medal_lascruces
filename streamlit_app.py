@@ -227,6 +227,114 @@ def get_group_by_code(code):
     return {"group": group, "torneo": torneo_res.data[0]}
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PDF EXPORT
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _generate_pdf(torneo_name, ranked, scores_idx, net_idx, holes, hoyos_display,
+                  best_front, best_back, best_total, winners_front, winners_back, winners_total):
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.enums import TA_CENTER
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=10*mm, rightMargin=10*mm,
+                            topMargin=12*mm, bottomMargin=12*mm)
+    elements = []
+
+    title_style = ParagraphStyle('t', fontSize=16, alignment=TA_CENTER, spaceAfter=4)
+    sub_style   = ParagraphStyle('s', fontSize=9,  alignment=TA_CENTER, spaceAfter=8, textColor=colors.grey)
+    elements.append(Paragraph(f"⛳ Medal Play — {torneo_name}", title_style))
+    elements.append(Paragraph(f"Ranking neto — {len(hoyos_display)} hoyos", sub_style))
+
+    # Ganadores
+    def fmt_w(val, names): return f"{' / '.join(names)} ({val})" if val and names else "—"
+    winner_data = [
+        ["🌅 Front 9", "🌆 Back 9", "🎖️ Torneo"],
+        [fmt_w(best_front, winners_front), fmt_w(best_back, winners_back), fmt_w(best_total, winners_total)],
+    ]
+    wt = Table(winner_data, colWidths=[85*mm, 85*mm, 85*mm])
+    wt.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#fff8e1')),
+        ('FONTSIZE', (0,0), (-1,-1), 9),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey),
+        ('FONTNAME', (0,1), (-1,1), 'Helvetica-Bold'),
+    ]))
+    elements.append(wt)
+    elements.append(Spacer(1, 5*mm))
+
+    # Tabla detalle
+    VERDE  = colors.HexColor('#2e7d32')
+    NARANJA = colors.HexColor('#e65100')
+    ROJO   = colors.HexColor('#c62828')
+    BLANCO = colors.white
+
+    col_w  = 9*mm
+    name_w = 36*mm
+    header = ['#', 'Jugador', 'HC']
+    for h in hoyos_display:
+        header.append(f'H{h}\nP{holes[h]["par"]}')
+        if h == 9:  header += ['F', 'NF']
+        if h == 18: header += ['B', 'NB']
+    header += ['Total', 'Neto']
+    col_widths = [6*mm, name_w, 7*mm] + [col_w] * (len(header) - 3)
+
+    table_data = [header]
+    cell_colors = {}
+
+    for ri, r in enumerate(ranked):
+        pid = r['pid']
+        row = [r.get('pos', '—'), r['name'], str(r['hcp'])]
+        ci = 3
+        for h in hoyos_display:
+            gross = scores_idx.get((pid, h), 0)
+            par   = holes.get(h, {}).get('par', 4)
+            if gross > 0:
+                diff = gross - par
+                row.append(str(gross))
+                if diff <= -1:  cell_colors[(ri+1, ci)] = VERDE
+                elif diff == 1: cell_colors[(ri+1, ci)] = NARANJA
+                elif diff >= 2: cell_colors[(ri+1, ci)] = ROJO
+            else:
+                row.append('—')
+            ci += 1
+            if h == 9:
+                row += [str(r['front']), str(r['net_front'])]; ci += 2
+            if h == 18:
+                row += [str(r['back']),  str(r['net_back'])];  ci += 2
+        row += [str(r['total']), str(r['net_total'])]
+        table_data.append(row)
+
+    dt = Table(table_data, colWidths=col_widths, repeatRows=1)
+    base_style = [
+        ('FONTSIZE', (0,0), (-1,-1), 7),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('ALIGN', (1,0), (-1,-1), 'CENTER'),
+        ('ALIGN', (1,0), (1,-1), 'LEFT'),
+        ('GRID', (0,0), (-1,-1), 0.3, colors.lightgrey),
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1565c0')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#f5f5f5')]),
+        # Front/Back/Total/Neto en negrita
+        ('FONTNAME', (0,1), (0,-1), 'Helvetica-Bold'),
+    ]
+    for (r, c), col in cell_colors.items():
+        base_style.append(('BACKGROUND', (c,r), (c,r), col))
+        base_style.append(('TEXTCOLOR',  (c,r), (c,r), colors.white))
+    dt.setStyle(TableStyle(base_style))
+    elements.append(dt)
+
+    doc.build(elements)
+    return buf.getvalue()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # LEADERBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -448,6 +556,22 @@ def leaderboard_ui():
             use_container_width=True,
             hide_index=True
         )
+
+        # Botón exportar PDF
+        try:
+            pdf_bytes = _generate_pdf(
+                torneo["name"], ranked, scores_idx, net_idx, holes, hoyos_display,
+                best_front, best_back, best_total, winners_front, winners_back, winners_total
+            )
+            st.download_button(
+                label="📄 Exportar PDF",
+                data=pdf_bytes,
+                file_name=f"leaderboard_{torneo['name'].replace(' ', '_')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        except Exception as e:
+            st.warning(f"PDF no disponible: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CAPTURAR SCORES

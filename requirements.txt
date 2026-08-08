@@ -1,2 +1,4 @@
 streamlit
 supabase
+reportlab
+pandas
