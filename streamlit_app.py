@@ -266,7 +266,20 @@ def leaderboard_ui():
             extra += 1
         return extra
 
-    # Índice de scores bruto y neto por (pid, hoyo)
+    # Traer hoyos del campo
+    sb = get_authed_client()
+    tee_id = torneo.get("tee_id")
+    course_id = None
+    if tee_id:
+        tee_res = sb.table("tees").select("course_id").eq("id", tee_id).execute()
+        tee = tee_res.data[0] if tee_res.data else {}
+        course_id = tee.get("course_id")
+
+    holes_list = get_holes(course_id) if course_id else []
+    holes = {h["hole_number"]: h for h in holes_list}
+    hole_nums = sorted(holes.keys())
+
+    # Índice de scores bruto y neto por (pid, hoyo) — requiere holes
     scores_idx = {}
     net_idx = {}
     for s in scores_raw:
@@ -277,20 +290,6 @@ def leaderboard_ui():
         hole_hcp = holes.get(h, {}).get("handicap", h)
         extra = strokes_received(player_hcp.get(pid, 0), hole_hcp)
         net_idx[(pid, h)] = max(1, gross - extra) if gross > 0 else 0
-
-    # Traer hoyos del campo
-    sb = get_authed_client()
-    tee_id = torneo.get("tee_id")
-    tee = {}
-    course_id = None
-    if tee_id:
-        tee_res = sb.table("tees").select("course_id").eq("id", tee_id).execute()
-        tee = tee_res.data[0] if tee_res.data else {}
-        course_id = tee.get("course_id")
-
-    holes_list = get_holes(course_id) if course_id else []
-    holes = {h["hole_number"]: h for h in holes_list}
-    hole_nums = sorted(holes.keys())
 
     # Hoyos completados por TODOS los jugadores del torneo (mínimo común)
     all_pids = [p.get("player_id") or p.get("guest_id") for p in players]
