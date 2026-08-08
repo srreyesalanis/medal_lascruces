@@ -252,11 +252,31 @@ def leaderboard_ui():
         st.warning("Este torneo no tiene jugadores.")
         return
 
-    # Índice de scores por (player_id/guest_id, hoyo)
+    # Índice de course_handicap por jugador
+    player_hcp = {}
+    for p in players:
+        pid = p.get("player_id") or p.get("guest_id")
+        player_hcp[pid] = int(p.get("course_handicap") or 0)
+
+    def strokes_received(course_hcp, hole_hcp):
+        if course_hcp <= 0:
+            return 0
+        extra = course_hcp // 18
+        if hole_hcp <= (course_hcp % 18):
+            extra += 1
+        return extra
+
+    # Índice de scores bruto y neto por (pid, hoyo)
     scores_idx = {}
+    net_idx = {}
     for s in scores_raw:
         pid = s.get("player_id") or s.get("guest_id")
-        scores_idx[(pid, s["hole_number"])] = s["strokes"]
+        h = s["hole_number"]
+        gross = s["strokes"]
+        scores_idx[(pid, h)] = gross
+        hole_hcp = holes.get(h, {}).get("handicap", h)
+        extra = strokes_received(player_hcp.get(pid, 0), hole_hcp)
+        net_idx[(pid, h)] = max(1, gross - extra) if gross > 0 else 0
 
     # Traer hoyos del campo
     sb = get_authed_client()
@@ -279,49 +299,60 @@ def leaderboard_ui():
         if all(scores_idx.get((pid, h), 0) > 0 for pid in all_pids):
             hoyos_completos.append(h)
 
-    # Calcular totales por jugador usando solo hoyos completados por todos
+    # Calcular totales bruto y neto por jugador usando solo hoyos completados por todos
     player_totals = {}
     player_front = {}
     player_back = {}
+    player_net_totals = {}
+    player_net_front = {}
+    player_net_back = {}
     for p in players:
         pid = p.get("player_id") or p.get("guest_id")
-        front = sum(scores_idx.get((pid, h), 0) for h in hoyos_completos if h < 10)
-        back  = sum(scores_idx.get((pid, h), 0) for h in hoyos_completos if h >= 10)
-        player_totals[pid] = front + back
-        player_front[pid] = front
-        player_back[pid] = back
+        front  = sum(scores_idx.get((pid, h), 0) for h in hoyos_completos if h < 10)
+        back   = sum(scores_idx.get((pid, h), 0) for h in hoyos_completos if h >= 10)
+        nfront = sum(net_idx.get((pid, h), 0)    for h in hoyos_completos if h < 10)
+        nback  = sum(net_idx.get((pid, h), 0)    for h in hoyos_completos if h >= 10)
+        player_totals[pid]    = front + back
+        player_front[pid]     = front
+        player_back[pid]      = back
+        player_net_totals[pid] = nfront + nback
+        player_net_front[pid]  = nfront
+        player_net_back[pid]   = nback
 
     if not hoyos_completos:
         st.info("Aún no hay hoyos completados por todos los jugadores.")
         return
 
-    # Rankear
+    # Rankear por neto
     ranked = []
     for p in players:
         pid = p.get("player_id") or p.get("guest_id")
-        total = player_totals.get(pid, 0)
         ranked.append({
             "pid": pid,
             "name": p["player_name"],
-            "total": total,
+            "hcp": player_hcp.get(pid, 0),
+            "total": player_totals.get(pid, 0),
             "front": player_front.get(pid, 0),
             "back": player_back.get(pid, 0),
+            "net_total": player_net_totals.get(pid, 0),
+            "net_front": player_net_front.get(pid, 0),
+            "net_back": player_net_back.get(pid, 0),
         })
-    ranked.sort(key=lambda x: x["total"] if x["total"] > 0 else float('inf'))
+    ranked.sort(key=lambda x: x["net_total"] if x["net_total"] > 0 else float('inf'))
 
-    # Ganadores
+    # Ganadores (por neto)
     st.markdown("### 🏆 Ganadores")
     if ranked:
         def _best(vals): return min(v for v in vals if v > 0) if any(v > 0 for v in vals) else None
         def _pid(p): return p.get("player_id") or p.get("guest_id")
 
-        best_total = _best([r["total"] for r in ranked])
-        best_front = _best([player_front.get(_pid(p), 0) for p in players])
-        best_back  = _best([player_back.get(_pid(p), 0)  for p in players])
+        best_total = _best([r["net_total"] for r in ranked])
+        best_front = _best([player_net_front.get(_pid(p), 0) for p in players])
+        best_back  = _best([player_net_back.get(_pid(p), 0)  for p in players])
 
-        winners_total = [r["name"]        for r in ranked  if best_total and r["total"] == best_total]
-        winners_front = [p["player_name"] for p in players if best_front and player_front.get(_pid(p), 0) == best_front]
-        winners_back  = [p["player_name"] for p in players if best_back  and player_back.get(_pid(p), 0)  == best_back]
+        winners_total = [r["name"]        for r in ranked  if best_total and r["net_total"] == best_total]
+        winners_front = [p["player_name"] for p in players if best_front and player_net_front.get(_pid(p), 0) == best_front]
+        winners_back  = [p["player_name"] for p in players if best_back  and player_net_back.get(_pid(p), 0)  == best_back]
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -342,17 +373,17 @@ def leaderboard_ui():
         prev_total = None
         skip = 0
         for r in ranked:
-            if r["total"] == 0:
+            if r["net_total"] == 0:
                 r["pos"] = "—"
                 continue
-            if r["total"] == prev_total:
+            if r["net_total"] == prev_total:
                 r["pos"] = f"T{pos}"
                 skip += 1
             else:
                 pos += skip
                 skip = 1
                 r["pos"] = str(pos)
-                prev_total = r["total"]
+                prev_total = r["net_total"]
         # Marcar empates en el grupo anterior
         for i, r in enumerate(ranked):
             if r.get("pos", "—") == str(pos) and sum(1 for x in ranked if x.get("pos", "") == str(pos)) > 1:
@@ -361,21 +392,24 @@ def leaderboard_ui():
         tabla_data = []
         for r in ranked:
             pid = r["pid"]
-            row_data = {"#": r.get("pos", "—"), "Jugador": r["name"]}
+            row_data = {"#": r.get("pos", "—"), "Jugador": r["name"], "HC": r["hcp"]}
             for h in hoyos_display:
                 v = scores_idx.get((pid, h), 0)
                 row_data[f"H{h}"] = v if v > 0 else 0
                 if h == 9 and 9 in hoyos_display:
                     row_data["Front"] = r["front"]
-            row_data["Back"] = r["back"]
+                    row_data["NF"] = r["net_front"]
+            row_data["Back"]  = r["back"]
+            row_data["NB"]    = r["net_back"]
             row_data["Total"] = r["total"]
+            row_data["Neto"]  = r["net_total"]
             tabla_data.append(row_data)
 
         df = pd.DataFrame(tabla_data)
 
         # Columnas de hoyos para colorear
         hoyo_cols = [f"H{h}" for h in hoyos_display]
-        summary_cols = [c for c in ["Front", "Back", "Total"] if c in df.columns]
+        summary_cols = [c for c in ["Front", "NF", "Back", "NB", "Total", "Neto"] if c in df.columns]
 
         def color_hoyo(val, col):
             try:
