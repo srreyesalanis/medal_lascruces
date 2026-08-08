@@ -272,25 +272,28 @@ def leaderboard_ui():
     holes = {h["hole_number"]: h for h in holes_list}
     hole_nums = sorted(holes.keys())
 
-    # Calcular totales por jugador
+    # Hoyos completados por TODOS los jugadores del torneo (mínimo común)
+    all_pids = [p.get("player_id") or p.get("guest_id") for p in players]
+    hoyos_completos = []
+    for h in range(1, 19):
+        if all(scores_idx.get((pid, h), 0) > 0 for pid in all_pids):
+            hoyos_completos.append(h)
+
+    # Calcular totales por jugador usando solo hoyos completados por todos
     player_totals = {}
     player_front = {}
     player_back = {}
     for p in players:
         pid = p.get("player_id") or p.get("guest_id")
-        front = 0
-        back = 0
-        for h in range(1, 10):
-            v = scores_idx.get((pid, h), 0)
-            if v:
-                front += v
-        for h in range(10, 19):
-            v = scores_idx.get((pid, h), 0)
-            if v:
-                back += v
+        front = sum(scores_idx.get((pid, h), 0) for h in hoyos_completos if h < 10)
+        back  = sum(scores_idx.get((pid, h), 0) for h in hoyos_completos if h >= 10)
         player_totals[pid] = front + back
         player_front[pid] = front
         player_back[pid] = back
+
+    if not hoyos_completos:
+        st.info("Aún no hay hoyos completados por todos los jugadores.")
+        return
 
     # Rankear
     ranked = []
@@ -328,9 +331,11 @@ def leaderboard_ui():
         with col3:
             st.metric("🎖️ Torneo",  str(best_total) if best_total else "—", " / ".join(winners_total))
 
-    # Tabla detalle por hoyo
-    if ranked and hole_nums:
+    # Tabla detalle por hoyo — solo hoyos completados por todos
+    if ranked and hoyos_completos:
+        hoyos_display = hoyos_completos
         st.subheader("📊 Detalle por hoyo")
+        st.caption(f"Ranking basado en {len(hoyos_completos)} hoyos completados por todos los jugadores (H{hoyos_completos[0]}–H{hoyos_completos[-1]})")
 
         # Ranking con empates estilo golf (1,1,3...)
         pos = 1
@@ -357,7 +362,7 @@ def leaderboard_ui():
         for r in ranked:
             pid = r["pid"]
             row_data = {"#": r.get("pos", "—"), "Jugador": r["name"]}
-            for h in hole_nums:
+            for h in hoyos_display:
                 v = scores_idx.get((pid, h), 0)
                 row_data[f"H{h}"] = v if v > 0 else "—"
             row_data["Front"] = r["front"]
