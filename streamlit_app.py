@@ -364,14 +364,57 @@ def leaderboard_ui():
             row_data = {"#": r.get("pos", "—"), "Jugador": r["name"]}
             for h in hoyos_display:
                 v = scores_idx.get((pid, h), 0)
-                row_data[f"H{h}"] = v if v > 0 else "—"
-            row_data["Front"] = r["front"]
+                row_data[f"H{h}"] = v if v > 0 else 0
+                if h == 9 and 9 in hoyos_display:
+                    row_data["Front"] = r["front"]
             row_data["Back"] = r["back"]
             row_data["Total"] = r["total"]
             tabla_data.append(row_data)
 
         df = pd.DataFrame(tabla_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # Columnas de hoyos para colorear
+        hoyo_cols = [f"H{h}" for h in hoyos_display]
+        summary_cols = [c for c in ["Front", "Back", "Total"] if c in df.columns]
+
+        def color_hoyo(val, col):
+            try:
+                h = int(col[1:])
+                par = holes.get(h, {}).get("par", 4)
+                v = int(val)
+                if v <= 0:
+                    return ""
+                diff = v - par
+                if diff <= -1:
+                    return "background-color: #2e7d32; color: white"   # verde birdie+
+                elif diff == 1:
+                    return "background-color: #e65100; color: white"   # naranja bogey
+                elif diff >= 2:
+                    return "background-color: #c62828; color: white"   # rojo doble+
+                return ""
+            except:
+                return ""
+
+        def style_table(df):
+            styles = pd.DataFrame("", index=df.index, columns=df.columns)
+            for col in hoyo_cols:
+                if col in df.columns:
+                    for i, val in enumerate(df[col]):
+                        styles.loc[i, col] = color_hoyo(val, col)
+            for col in summary_cols:
+                styles[col] = "font-weight: bold"
+            return styles
+
+        # Reemplazar 0 por — solo para display
+        df_display = df.copy()
+        for col in hoyo_cols:
+            df_display[col] = df_display[col].apply(lambda x: "—" if x == 0 else x)
+
+        st.dataframe(
+            df_display.style.apply(style_table, axis=None),
+            use_container_width=True,
+            hide_index=True
+        )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CAPTURAR SCORES
