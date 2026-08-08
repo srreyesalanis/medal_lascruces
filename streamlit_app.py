@@ -331,11 +331,32 @@ def leaderboard_ui():
     # Tabla detalle por hoyo
     if ranked and hole_nums:
         st.subheader("📊 Detalle por hoyo")
-        
+
+        # Ranking con empates estilo golf (1,1,3...)
+        pos = 1
+        prev_total = None
+        skip = 0
+        for r in ranked:
+            if r["total"] == 0:
+                r["pos"] = "—"
+                continue
+            if r["total"] == prev_total:
+                r["pos"] = f"T{pos}"
+                skip += 1
+            else:
+                pos += skip
+                skip = 1
+                r["pos"] = str(pos)
+                prev_total = r["total"]
+        # Marcar empates en el grupo anterior
+        for i, r in enumerate(ranked):
+            if r.get("pos", "—") == str(pos) and sum(1 for x in ranked if x.get("pos", "") == str(pos)) > 1:
+                r["pos"] = f"T{pos}"
+
         tabla_data = []
         for r in ranked:
             pid = r["pid"]
-            row_data = {"Jugador": r["name"]}
+            row_data = {"#": r.get("pos", "—"), "Jugador": r["name"]}
             for h in hole_nums:
                 v = scores_idx.get((pid, h), 0)
                 row_data[f"H{h}"] = v if v > 0 else "—"
