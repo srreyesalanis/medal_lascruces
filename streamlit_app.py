@@ -671,6 +671,16 @@ def admin_panel():
 def main():
     st.sidebar.title("⛳ Medal Play")
 
+    # Restaurar desde URL al reabrir el cel
+    code_from_url = st.query_params.get("code")
+    if code_from_url and not st.session_state.get("group_auth"):
+        result = get_group_by_code(code_from_url)
+        if result:
+            st.session_state["group_auth"] = result
+            hole_from_url = st.query_params.get("h")
+            if hole_from_url:
+                st.session_state["capture_hole"] = int(hole_from_url)
+
     default_idx = 0
     if st.session_state.get("group_auth"):
         default_idx = 1
