@@ -172,6 +172,20 @@ def add_player_to_group(gid, player_name, course_handicap, player_id=None):
     }
     if player_id:
         row["player_id"] = player_id
+    else:
+        # Invitado: crear registro en 'guests' y enlazar guest_id.
+        # Sin esto, player_id y guest_id quedan NULL => los scores se
+        # sobreescriben entre jugadores y el icono ✅/⬜ nunca cambia.
+        grp = sb.table("groups").select("tournament_id").eq("id", gid).execute().data[0]
+        tid = grp["tournament_id"]
+        tfecha = sb.table("tournaments").select("date").eq("id", tid).execute().data[0]["date"]
+        guest = sb.table("guests").insert({
+            "name": player_name,
+            "handicap_index": float(course_handicap or 0),
+            "tournament_date": tfecha,
+            "tournament_id": tid,
+        }).execute().data[0]
+        row["guest_id"] = guest["id"]
     sb.table("group_players").insert(row).execute()
 
 def remove_player_from_group(gp_id):
@@ -186,6 +200,12 @@ def delete_group(gid):
 
 def upsert_score(tid, gid, hole_number, strokes, player_id=None, guest_id=None):
     sb = get_authed_client()
+    # Guardia: sin identidad de jugador el upsert pisaría los scores de
+    # todos los jugadores del hoyo. No debería pasar con el fix de invitados,
+    # pero lo blindamos por si acaso.
+    if not player_id and not guest_id:
+        raise ValueError("upsert_score requiere player_id o guest_id")
+
     q = sb.table("tournament_scores").select("id").eq("tournament_id", tid).eq("hole_number", hole_number)
     if player_id:
         q = q.eq("player_id", player_id)
@@ -630,13 +650,17 @@ def capture_ui():
 
     scores_raw = get_scores(tid)
     scores_idx = {}
-    hoyos_con_scores = set()
     for s in scores_raw:
         pid = s.get("player_id") or s.get("guest_id")
         scores_idx[(pid, s["hole_number"])] = s["strokes"]
-        # Hoyo completo = todos los jugadores tienen score
+
+    # Hoyo completo = todos los jugadores del grupo tienen score en ese hoyo
+    def _pkey(gp):
+        return gp.get("player_id") or gp.get("guest_id") or gp["id"]
+
+    hoyos_con_scores = set()
     for h in range(1, 19):
-        if all(scores_idx.get((gp.get("player_id") or gp.get("guest_id") or gp["id"], h)) for gp in gps):
+        if all(scores_idx.get((_pkey(gp), h)) for gp in gps):
             hoyos_con_scores.add(h)
 
     # Selector de hoyo
@@ -662,7 +686,7 @@ def capture_ui():
     # Captura por jugador en este hoyo
     new_vals = {}
     for gp in gps:
-        pid = gp.get("player_id") or gp.get("guest_id") or gp["id"]
+        pid = _pkey(gp)
         prev = scores_idx.get((pid, hole_num))
         col_n, col_v = st.columns([3, 2])
         col_n.markdown(f"**{gp['player_name']}**")
